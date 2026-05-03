@@ -521,15 +521,6 @@ function buildAllValues(trades){
   // 2. Hand-curated dynasty baseline (consensus for top ~80 players)
   // 3. Sleeper search_rank conversion (popularity proxy)
   // 4. Low default (late 4th round level)
-  // FantasyCalc values normalized to our pick-anchored scale
-  // FC values go up to ~10000; we scale them to match our anchor
-  const fcMax = G.adpValues ? Math.max(...Object.values(G.adpValues), 1) : 10000;
-  function adpSeed(pid){
-    const adp = G.adpValues && G.adpValues[pid];
-    if(!adp || adp <= 0) return 0;
-    // Scale to our anchor: best FC player → anchorVal (best current pick)
-    return Math.round((adp / fcMax) * anchorVal);
-  }
   function searchRankSeed(player){
     if(!player) return 0;
     const sr = player.search_rank;
@@ -682,6 +673,15 @@ function buildAllValues(trades){
                  || 9000;
   // Scale so best current pick = 9000. All picks and players relative to this.
   const scaleAll = v => Math.round((v / anchorVal) * 9000);
+
+  // FantasyCalc values normalized to our pick-anchored scale
+  // Must be defined after anchorVal so the scaling reference works
+  const fcMax = G.adpValues ? Math.max(...Object.values(G.adpValues), 1) : 10000;
+  function adpSeed(pid){
+    const adp = G.adpValues && G.adpValues[pid];
+    if(!adp || adp <= 0) return 0;
+    return Math.round((adp / fcMax) * anchorVal);
+  }
 
   // No external market ranking — values are purely league-derived
   const marketRankMap={};
