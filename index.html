@@ -521,9 +521,14 @@ function buildAllValues(trades){
   // 2. Hand-curated dynasty baseline (consensus for top ~80 players)
   // 3. Sleeper search_rank conversion (popularity proxy)
   // 4. Low default (late 4th round level)
+  // FantasyCalc values normalized to our pick-anchored scale
+  // FC values go up to ~10000; we scale them to match our anchor
+  const fcMax = G.adpValues ? Math.max(...Object.values(G.adpValues), 1) : 10000;
   function adpSeed(pid){
     const adp = G.adpValues && G.adpValues[pid];
-    return adp > 0 ? adp : 0;
+    if(!adp || adp <= 0) return 0;
+    // Scale to our anchor: best FC player → anchorVal (best current pick)
+    return Math.round((adp / fcMax) * anchorVal);
   }
   function searchRankSeed(player){
     if(!player) return 0;
@@ -531,7 +536,7 @@ function buildAllValues(trades){
     if(!sr || sr <= 0 || sr >= 9999999) return 0;
     return Math.round(8500 * Math.exp(-sr / 400));
   }
-  const lowSeed = pickBaseline('PICK_'+yr+'_4_mid', teams);
+  const lowSeed = pickBaseline('PICK_'+yr+'_3_mid', teams); // fallback = mid 3rd
   const values={};
   allPlayerKeys.forEach(key=>{
     if(key.startsWith('PICK_')){
@@ -540,9 +545,9 @@ function buildAllValues(trades){
       const pid=key.replace('PLR_','');
       const adp=adpSeed(pid);
       const baseline=dynastyBaseline(pid);
-      const srVal=searchRankSeed(pm[pid]);
-      // Use best available seed in priority order
-      values[key]=adp>0?adp:baseline>0?baseline:srVal>0?srVal:lowSeed;
+      // Only use search_rank if player has FC or baseline data — prevents scale mismatch
+      // Players with none of these stay at lowSeed (mid-3rd) as a conservative default
+      values[key]=adp>0?adp:baseline>0?baseline:lowSeed;
     }
   });
 
@@ -741,20 +746,36 @@ function buildAllValues(trades){
       return parts.join(', ')||'(nothing)';
     };
     // Record trace for each player involved
-    // For each player, find which roster they went TO, then show what the OTHER roster received
+    // Build a lookup: roster_id → list of asset keys it received
+    const rosterReceived={};
+    Object.entries(adds).forEach(([pid,toRid])=>{
+      if(!rosterReceived[toRid])rosterReceived[toRid]={players:[],picks:[]};
+      rosterReceived[toRid].players.push(pid);
+    });
+    picks.forEach(pick=>{
+      const rid=pick.owner_id;
+      if(!rosterReceived[rid])rosterReceived[rid]={players:[],picks:[]};
+      rosterReceived[rid].picks.push(pick);
+    });
+    const receivingRosters=Object.keys(rosterReceived);
+
     Object.entries(adds).forEach(([pid, receivingRid])=>{
       if(!valueTrace[pid])return;
-      // Find the side that RECEIVED this player
-      const mySideEntry=sideEntries.find(([rid,])=>rid===receivingRid);
-      // The other side is what the receiving roster GAVE UP (i.e. what the other roster got)
-      const otherSideEntry=sideEntries.find(([rid,])=>rid!==receivingRid);
-      const otherSide=otherSideEntry?formatSide(otherSideEntry[1]):'(unknown)';
-      // Package premium: applies to the smaller side
-      const mySize=(mySideEntry?mySideEntry[1]:s1).players.length+(mySideEntry?mySideEntry[1]:s1).picks.length;
-      const otherSize=(otherSideEntry?otherSideEntry[1]:s2).players.length+(otherSideEntry?otherSideEntry[1]:s2).picks.length;
+      // What did the OTHER roster(s) receive? That's what this player was traded for.
+      const otherRosters=receivingRosters.filter(rid=>rid!==receivingRid);
+      if(!otherRosters.length)return;
+      // Combine all assets received by other rosters
+      const otherAssets={players:[],picks:[]};
+      otherRosters.forEach(rid=>{
+        (rosterReceived[rid].players||[]).forEach(p=>otherAssets.players.push(p));
+        (rosterReceived[rid].picks||[]).forEach(p=>otherAssets.picks.push(p));
+      });
+      const otherSide=formatSide(otherAssets);
+      const mySize=rosterReceived[receivingRid].players.length+rosterReceived[receivingRid].picks.length;
+      const otherSize=otherAssets.players.length+otherAssets.picks.length;
       const prem2=packagePremium(mySize,otherSize);
       const myPrem=mySize<otherSize?prem2.a:1.0;
-      const premNote=myPrem>1?` (+${Math.round((myPrem-1)*100)}% package premium)`:'';
+      const premNote=myPrem>1?' (+'+Math.round((myPrem-1)*100)+'% package premium)':'';
       valueTrace[pid].push({
         type:'trade',
         date,
@@ -772,6 +793,10 @@ function buildAllValues(trades){
     const p=pm[pid]||{};
     const tradeCount=trades.filter(t=>Object.keys(t.adds||{}).includes(pid)).length;
     if(tradeCount===0) return; // skip untraded players
+    // Skip players with no recognized value seed — prevents scale-mismatched entries
+    const hasFC=adpSeed(pid)>0;
+    const hasBaseline=dynastyBaseline(pid)>0;
+    if(!hasFC&&!hasBaseline&&tradeCount<2) return; // need FC/baseline OR 2+ trades for credibility
     const leagueVal=Math.min(10000,scaleAll(values[key]||0));
     const tier=tradeCount>=3?'proven':'anchored';
 
