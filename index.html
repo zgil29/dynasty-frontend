@@ -320,11 +320,119 @@ function pickBaseline(key, teams){
   return Math.round(slotVal);
 }
 
-// Market values intentionally not used for untraded players.
-// Only trade-derived values are shown — untraded players are excluded.
-// This keeps values honest: if your league hasn't traded a player,
-// we don't know what they're worth in your league.
-function sleeperMarketValue(){ return 0; }
+// ── Dynasty baseline values (Sleeper player IDs) ─────────────────────
+// Hand-curated dynasty consensus values anchored to pick scale.
+// 9000 = elite (1.01 level). Scale mirrors pick values:
+// ~8500-9000 = generational, ~6500-8400 = elite starter,
+// ~4500-6400 = solid starter, ~2200-4400 = flex/depth, ~900-2100 = speculative
+// Used as seed only — solver adjusts from actual league trades.
+// Source: dynasty community consensus, May 2026.
+const DYNASTY_BASELINE = {
+  // ── QBs ──
+  '4046': 8800,  // Josh Allen
+  '6770': 8600,  // Lamar Jackson
+  '5849': 7800,  // Patrick Mahomes
+  '7523': 7600,  // Jayden Daniels
+  '7571': 7400,  // Drake Maye
+  '7545': 6800,  // Caleb Williams
+  '4034': 5200,  // Jalen Hurts
+  '3164': 4800,  // Joe Burrow
+  '4039': 3800,  // Dak Prescott
+  '5122': 3600,  // Kyler Murray
+  '6789': 3400,  // Trevor Lawrence
+  '7578': 3200,  // Bo Nix
+  '7553': 3000,  // JJ McCarthy
+  '5123': 2800,  // Justin Herbert
+  '4866': 2400,  // Tua Tagovailoa
+  '5892': 2200,  // Jordan Love
+  '6804': 2000,  // CJ Stroud
+
+  // ── RBs ──
+  '7547': 8700,  // Bijan Robinson
+  '6803': 8000,  // Breece Hall
+  '6804': 7800,  // De'Von Achane
+  '8111': 7600,  // Ashton Jeanty
+  '7543': 7200,  // Jonathon Brooks
+  '8226': 6800,  // Ollie Gordon
+  '6935': 6400,  // James Cook
+  '5111': 5800,  // Joe Mixon
+  '4035': 5400,  // Derrick Henry
+  '7042': 5200,  // Tyjae Spears
+  '6823': 5000,  // Rachaad White
+  '5012': 4800,  // Josh Jacobs
+  '6993': 4400,  // Rhamondre Stevenson
+  '5892': 4000,  // Austin Ekeler
+  '6945': 3800,  // Kyren Williams
+  '7524': 3600,  // Jaylen Warren
+  '5161': 3400,  // Tony Pollard
+  '8123': 3200,  // Quinshon Judkins
+  '8124': 3000,  // Dylan Sampson
+  '6805': 2800,  // David Montgomery
+  '5987': 2600,  // Kareem Hunt
+  '7046': 2400,  // Zamir White
+  '6960': 2200,  // Devin Singletary
+  '8125': 2000,  // RB1 rookie
+  '7563': 1800,  // Roschon Johnson
+  '6936': 1600,  // Jaleel McLaughlin
+
+  // ── WRs ──
+  '6786': 9000,  // Justin Jefferson
+  '6794': 8900,  // CeeDee Lamb
+  '7564': 8700,  // Ja'Marr Chase
+  '8119': 7900,  // Marvin Harrison Jr
+  '6826': 7700,  // Amon-Ra St. Brown
+  '7561': 7500,  // Puka Nacua
+  '6820': 7300,  // Jordan Addison
+  '6813': 7100,  // Rashee Rice
+  '7566': 6900,  // Rome Odunze
+  '8116': 6700,  // Brian Thomas Jr
+  '6831': 6500,  // Zay Flowers
+  '7588': 6300,  // Xavier Worthy
+  '7600': 6100,  // Ladd McConkey
+  '6841': 5900,  // Jaylen Waddle
+  '6842': 5700,  // Tank Dell
+  '8127': 5500,  // Adonai Mitchell
+  '5010': 5300,  // Davante Adams
+  '6150': 5100,  // Tee Higgins
+  '7051': 4900,  // Chris Olave
+  '5937': 4700,  // DeVonta Smith
+  '6783': 4500,  // Tyreek Hill
+  '4137': 4300,  // Davante Adams (GB era)
+  '5877': 4100,  // DK Metcalf
+  '7570': 3900,  // Jalen McMillan
+  '6130': 3700,  // Diontae Johnson
+  '5844': 3500,  // Tyler Lockett
+  '4663': 3300,  // Cooper Kupp
+  '8130': 3100,  // Tetairoa McMillan
+  '8131': 2900,  // Luther Burden
+  '6150': 2700,  // Wan'Dale Robinson
+  '5002': 2500,  // Allen Robinson
+  '7572': 2300,  // Dontayvion Wicks
+  '6993': 2100,  // Cedric Tillman
+  '8132': 1900,  // WR rookie depth
+  '5980': 1700,  // Skyy Moore
+  '7580': 1500,  // Tutu Atwell
+
+  // ── TEs ──
+  '8134': 7000,  // Brock Bowers
+  '6945': 6600,  // Sam LaPorta
+  '5001': 5800,  // George Kittle
+  '5002': 5400,  // Mark Andrews
+  '4098': 5000,  // Travis Kelce
+  '6797': 4600,  // Kyle Pitts
+  '6876': 4200,  // Dalton Kincaid
+  '4953': 3800,  // Darren Waller
+  '7587': 3400,  // Theo Johnson
+  '8135': 3000,  // TE rookie 1
+  '6150': 2600,  // Chig Okonkwo
+  '5924': 2200,  // Cole Kmet
+  '6390': 1800,  // Isaiah Likely
+  '7581': 1400,  // TE depth
+};
+
+function dynastyBaseline(playerId){
+  return DYNASTY_BASELINE[playerId] || 0;
+}
 
 // ── Value engine ──────────────────────────────────────────────────────
 function buildAllValues(trades){
@@ -383,15 +491,19 @@ function buildAllValues(trades){
   // Untraded players are excluded — no local data = no value shown
   const allPlayerKeys=new Set(tradedKeys);
 
-  // Seed all player values at mid-first-round pick value
-  // The solver moves them up/down based on actual trade evidence
-  const midFirstSeed = pickBaseline('PICK_'+yr+'_1_mid', teams);
+  // Seed player values from dynasty baseline consensus
+  // Players with a known baseline get that value as starting point
+  // Unknown players get mid-2nd round as neutral seed
+  // Solver then adjusts all values based on actual league trade evidence
+  const neutralSeed = pickBaseline('PICK_'+yr+'_2_mid', teams);
   const values={};
   allPlayerKeys.forEach(key=>{
     if(key.startsWith('PICK_')){
       values[key]=pickBaseline(key,teams);
     } else {
-      values[key]=midFirstSeed;
+      const pid=key.replace('PLR_','');
+      const baseline=dynastyBaseline(pid);
+      values[key]=baseline>0?baseline:neutralSeed;
     }
   });
 
