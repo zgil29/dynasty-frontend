@@ -210,9 +210,7 @@ tbody tr:hover td{background:var(--surface2);cursor:pointer}
           <thead><tr>
             <th>Player</th>
             <th class="r">League value</th>
-            <th class="r" style="min-width:70px">KTC</th>
-            <th class="r" style="min-width:70px">vs KTC</th>
-            <th style="width:100px">Demand</th>
+            <th style="width:130px">Demand</th>
           </tr></thead>
           <tbody id="valuesBody"></tbody>
         </table>
@@ -260,7 +258,7 @@ let G = {
   user: null, allLeagues: [], selectedId: null,
   playerMeta: {}, trades: [], rosters: [], users: [],
   leagueName: '', totalRosters: 12, season: '',
-  allValues: null, rosterMap: {}, ktcValues: null
+  allValues: null, rosterMap: {}
 };
 
 // ── Pick value system ────────────────────────────────────────────────
@@ -740,11 +738,6 @@ function buildAllValues(trades){
     const leagueVal=Math.min(10000,scaleAll(values[key]||0));
     const tier=tradeCount>=3?'proven':'anchored';
 
-    // KTC comparison value
-    const ktcRaw=(G.ktcValues&&G.ktcValues[pid])||0;
-    const ktcVal=ktcRaw>0?Math.min(10000,ktcRaw):0;
-    const dna=ktcVal>0?Math.round(((leagueVal-ktcVal)/Math.max(ktcVal,1))*100):0;
-
     playerResults.push({
       pid,key,
       name:p.full_name||pid,
@@ -753,11 +746,9 @@ function buildAllValues(trades){
       age:p.age||'?',
       count:tradeCount,
       value:leagueVal,
-      ktcValue:ktcVal,
       rawValue:values[key]||0,
       tier,
       source:'league',
-      dna, // % difference vs KTC: positive = your league values higher
       trace:valueTrace[pid]||[]
     });
   });
@@ -899,15 +890,7 @@ async function analyzeSelected(){
       G.playerMeta=await fetchJ('https://api.sleeper.app/v1/players/nfl');
     }
 
-    // Load KTC market values from backend (non-blocking — best effort)
-    if(!G.ktcValues){
-      try{
-        const mv=await fetchJ(BACKEND+'/api/market-values');
-        G.ktcValues={};
-        (mv||[]).forEach(r=>{ G.ktcValues[r.player_id]=r.ktc_value; });
-        console.log('KTC values loaded:',Object.keys(G.ktcValues).length);
-      }catch(e){ G.ktcValues={}; console.log('KTC values unavailable'); }
-    }
+
 
     // Load league + full trade chain from backend
     setText('leagueLoadingText','Fetching league and trade history...');
@@ -1103,17 +1086,11 @@ function renderValues(playerResults){
       ?'<span class="tier-badge tier-proven">● '+p.count+' trades</span>'
       :'<span class="tier-badge tier-anchored">● '+p.count+' trade'+(p.count!==1?'s':'')+'</span>';
     const dnaHtml='';
-    const ktcHtml=p.ktcValue>0?p.ktcValue.toLocaleString():'<span style="color:var(--muted)">—</span>';
-    const dnaHtml2=p.ktcValue>0&&Math.abs(p.dna)>=5
-      ?'<span class="dna-chip '+(p.dna>0?'dna-up':'dna-down')+'">'+(p.dna>0?'↑':'↓')+Math.abs(p.dna)+'%</span>'
-      :'<span style="color:var(--muted)">—</span>';
     return '<tr class="player-row" data-pid="'+p.pid+'">'+
       '<td><span class="pos pos-'+p.position+'">'+p.position+'</span>'+p.name+
       '<span style="font-size:11px;color:var(--muted);margin-left:4px">'+p.team+(p.age!=='?'?' · Age '+p.age:'')+' </span>'+
       sourceBadge+'</td>'+
       '<td class="r" style="font-weight:700">'+p.value.toLocaleString()+'</td>'+
-      '<td class="r" style="color:var(--muted2)">'+ktcHtml+'</td>'+
-      '<td class="r">'+dnaHtml2+'</td>'+
       '<td><div class="bar-wrap"><div class="bar"><div class="bar-fill" style="width:'+Math.round((p.value/maxVal)*100)+'%"></div></div></div></td>'+
       '</tr>';
   }).join('');
@@ -1239,17 +1216,12 @@ function openDrawer(pid){
 
   const tierLabel=pv.tier==='proven'?'League-proven ('+pv.count+'+ trades)':'Early signal ('+pv.count+' trade'+(pv.count!==1?'s':'')+')';
   const tierCls=pv.tier==='proven'?'tier-proven':'tier-anchored';
-  const ktcCompare=pv.ktcValue>0
-    ?'<strong style="color:var(--text)">'+pv.ktcValue.toLocaleString()+'</strong>'+(Math.abs(pv.dna)>=5
-      ?' — your league values this '+(pv.dna>0?'<strong style="color:var(--green)">'+pv.dna+'% higher</strong>':'<strong style="color:var(--red)">'+Math.abs(pv.dna)+'% lower</strong>')+' than KTC'
-      :' — in line with KTC')
-    :'<span style="color:var(--muted)">Not available yet — data updates daily</span>';
 
   document.getElementById('drawerStats').innerHTML=
     '<div class="d-stat"><div class="dl">League value</div><div class="dv">'+pv.value.toLocaleString()+'</div></div>'+
     '<div class="d-stat"><div class="dl">Times traded</div><div class="dv">'+pv.count+'</div></div>'+
-    '<div class="d-stat"><div class="dl">Confidence</div><div class="dv" style="font-size:12px;padding-top:4px"><span class="tier-badge '+tierCls+'">'+tierLabel+'</span></div></div>'+
-    '<div class="d-stat" style="grid-column:1/-1"><div class="dl">KTC comparison <span style="font-size:10px;color:var(--muted)">(data: <a href="https://keeptradecut.com" target="_blank" style="color:var(--accent)">KeepTradeCut</a>)</span></div><div class="dv" style="font-size:13px;padding-top:4px;line-height:1.5">'+ktcCompare+'</div></div>';
+    '<div class="d-stat"><div class="dl">Position</div><div class="dv">'+p.position+'</div></div>'+
+    '<div class="d-stat"><div class="dl">Confidence</div><div class="dv" style="font-size:12px;padding-top:4px"><span class="tier-badge '+tierCls+'">'+tierLabel+'</span></div></div>';
 
   // Value trace section — shows how trades influenced the value
   const trace=pv.trace||[];
