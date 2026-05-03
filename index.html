@@ -718,17 +718,21 @@ function buildAllValues(trades){
     const seedLabel=adpVal>0?'FantasyCalc market baseline':
       baseline>0?'Dynasty consensus baseline':
       srVal>0?'Sleeper popularity seed':'Low default seed';
+    const seedScaled=Math.min(9999,scaleAll(seedVal));
+    let runningVal=seedScaled;
+    if(!rosteredPlayerIds.has(pid)) runningVal=Math.min(9999,scaleAll(seedVal*0.65));
     valueTrace[pid]={
       seedLabel,
-      seedValue:Math.min(9999,scaleAll(seedVal)),
+      seedValue:seedScaled,
+      currentValue:runningVal,
       events:[],
     };
     if(!rosteredPlayerIds.has(pid)){
       valueTrace[pid].events.push({
         type:'decay',
         label:'Not on any current roster (−35% applied)',
-        before:Math.min(9999,scaleAll(seedVal)),
-        after:Math.min(9999,scaleAll(seedVal*0.65)),
+        before:seedScaled,
+        after:runningVal,
         date:''
       });
     }
@@ -779,9 +783,9 @@ function buildAllValues(trades){
       const impliedValue=Math.min(9999,Math.round(otherRawValue*myPrem));
       const premNote=myPrem>1?' (+'+Math.round((myPrem-1)*100)+'% package premium)':'';
 
-      // "Before" = what they were seeded at (market baseline)
-      // "After" = what this specific trade implied they were worth
-      const before=valueTrace[pid].seedValue;
+      // Before = running value after previous trade (or seed if first trade)
+      // After = what this trade implied they were worth
+      const before=valueTrace[pid].currentValue;
       const otherLabel=formatSide(otherAssets,pm);
       valueTrace[pid].events.push({
         type:'trade',
@@ -791,6 +795,8 @@ function buildAllValues(trades){
         after:impliedValue,
         implied:impliedValue
       });
+      // Update running value for next trade's "before"
+      valueTrace[pid].currentValue=impliedValue;
     });
   });
 
@@ -1359,29 +1365,40 @@ function openDrawer(pid){
     traceEvents.map((ev,i)=>{
       const isLast=i===traceEvents.length-1;
       if(ev.type==='decay'){
-        return '<div style="position:relative;margin-bottom:12px;font-size:12px;color:var(--red)">'+
+        const delta=ev.after-ev.before;
+        const deltaStr=delta.toLocaleString();
+        return '<div style="position:relative;margin-bottom:12px;font-size:12px">'+
           '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--red)"></div>'+
-          '<span>'+ev.label+'</span>'+
-          '<span style="font-weight:700;color:var(--red);margin-left:8px">'+ev.after.toLocaleString()+'</span>'+
+          '<div style="color:var(--muted2)">'+ev.label+'</div>'+
+          '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'+
+            '<span style="color:var(--muted2);font-size:11px">'+ev.before.toLocaleString()+'</span>'+
+            '<span style="color:var(--muted);font-size:11px">→</span>'+
+            '<span style="font-weight:700;color:var(--red)">'+ev.after.toLocaleString()+'</span>'+
+            '<span style="font-size:11px;color:var(--red);font-weight:600">('+deltaStr+')</span>'+
+          '</div>'+
           '</div>';
       }
       const delta=ev.after-ev.before;
-      const deltaColor=delta>0?'var(--green)':delta<0?'var(--red)':'var(--muted2)';
-      const deltaStr=delta>0?'+'+delta.toLocaleString():delta.toLocaleString();
-      return '<div style="position:relative;margin-bottom:12px;font-size:12px">'+
-        '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:'+(isLast?'var(--accent)':'var(--accent)')+'">'+'</div>'+
+      const isUp=delta>0;
+      const isDown=delta<0;
+      const dotColor=isUp?'var(--green)':isDown?'var(--red)':'var(--muted2)';
+      const deltaColor=isUp?'var(--green)':isDown?'var(--red)':'var(--muted2)';
+      const deltaStr=(isUp?'+':'')+delta.toLocaleString();
+      const arrow=isUp?'↑':isDown?'↓':'→';
+      return '<div style="position:relative;margin-bottom:14px;font-size:12px">'+
+        '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:'+dotColor+'"></div>'+
         '<div style="color:var(--muted2)">'+ev.label+'</div>'+
         (ev.date?'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+ev.date+'</div>':'')+
-        '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'+
+        '<div style="display:flex;align-items:center;gap:8px;margin-top:5px">'+
           '<span style="color:var(--muted2);font-size:11px">'+ev.before.toLocaleString()+'</span>'+
-          '<span style="color:var(--muted);font-size:11px">→</span>'+
+          '<span style="color:'+deltaColor+';font-size:12px">'+arrow+'</span>'+
           '<span style="font-weight:700;color:var(--text)">'+ev.after.toLocaleString()+'</span>'+
           '<span style="font-size:11px;color:'+deltaColor+';font-weight:600">('+deltaStr+')</span>'+
-          (isLast?'<span class="tier-badge tier-proven">Current</span>':'')+
+          (isLast?'<span class="tier-badge '+(isUp?'tier-proven':'tier-anchored')+'" style="margin-left:4px">Latest trade</span>':'')+
         '</div>'+
         '</div>';
     }).join('')+
-    (traceEvents.length===0?'<div style="font-size:12px;color:var(--muted)">No trades yet — value is market baseline</div>':'')+
+    (traceEvents.length===0?'<div style="font-size:12px;color:var(--muted)">No trades yet — value is market baseline only</div>':'')+
     '</div></div>';
 
   // Trade memory: every trade this player appeared in
