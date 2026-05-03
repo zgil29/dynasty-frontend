@@ -682,19 +682,32 @@ function buildAllValues(trades){
 
   // Build value trace per player — shows how each trade influenced their value
   // Run a mini single-pass trace to show before/after per trade
-  // Build value trace — chronological mini-solver to show value evolution per trade
-  // We run a simplified version: start each player at seed, process trades in date
-  // order, record before/after value at each trade involving that player
+  // Build value trace — show what each trade implied about a player's value
+  // Uses main solver values (stable, normalized) as the source of truth
+  // Each trade shows: what was received for this player (implied value at that time)
   const valueTrace={};
   const formatSide=(s,pm2)=>{
     const parts=[
-      ...s.players.map(pid2=>{ const p=pm2[pid2]; return p?p.full_name:pid2; }),
+      ...s.players.map(pid2=>{ const p2=pm2[pid2]; return p2?p2.full_name:pid2; }),
       ...s.picks.map(pk=>pk.pick_no?pk.season+' '+pk.round+'.'+String(pk.pick_no).padStart(2,'0'):pk.season+' Rd '+pk.round)
     ];
     return parts.join(', ')||'(nothing)';
   };
 
-  // Initialise trace for each traded player with seed info
+  // Helper: get stable pick value from main solver (capped to display range)
+  function stablePickValue(pick){
+    const k=pickKey(pick);
+    const v=values[k]||pickBaseline(k,teams)||0;
+    return Math.min(9999,Math.max(0,scaleAll(v)));
+  }
+
+  // Helper: get stable player value from main solver
+  function stablePlayerValue(pid2){
+    const v=values['PLR_'+pid2]||0;
+    return Math.min(9999,Math.max(0,scaleAll(v)));
+  }
+
+  // Initialise trace for each traded player
   allPlayerKeys.forEach(key=>{
     if(!key.startsWith('PLR_'))return;
     const pid=key.replace('PLR_','');
@@ -707,31 +720,27 @@ function buildAllValues(trades){
       srVal>0?'Sleeper popularity seed':'Low default seed';
     valueTrace[pid]={
       seedLabel,
-      seedValue:scaleAll(seedVal),
-      events:[], // chronological trade events with before/after values
-      currentValue:scaleAll(seedVal) // running value updated per trade
+      seedValue:Math.min(9999,scaleAll(seedVal)),
+      events:[],
     };
     if(!rosteredPlayerIds.has(pid)){
       valueTrace[pid].events.push({
         type:'decay',
         label:'Not on any current roster (−35% applied)',
-        before:scaleAll(seedVal),
-        after:scaleAll(seedVal*0.65),
+        before:Math.min(9999,scaleAll(seedVal)),
+        after:Math.min(9999,scaleAll(seedVal*0.65)),
         date:''
       });
-      valueTrace[pid].currentValue=scaleAll(seedVal*0.65);
     }
   });
 
-  // Process trades chronologically — for each trade involving a tracked player,
-  // compute the implied value from the other side and record before/after
+  // Process trades chronologically
   const sortedTrades=[...trades].sort((a,b)=>(a.created||0)-(b.created||0));
   sortedTrades.forEach(trade=>{
     const adds=trade.adds||{};
     const picks=trade.draft_picks||[];
     const date=trade.created?new Date(trade.created).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
 
-    // Build sides
     const rosterReceived={};
     Object.entries(adds).forEach(([pid,toRid])=>{
       if(!rosterReceived[toRid])rosterReceived[toRid]={players:[],picks:[]};
@@ -745,54 +754,43 @@ function buildAllValues(trades){
     const receivingRosters=Object.keys(rosterReceived);
     if(receivingRosters.length<2)return;
 
-    Object.entries(adds).forEach(([pid, receivingRid])=>{
+    Object.entries(adds).forEach(([pid,receivingRid])=>{
       if(!valueTrace[pid])return;
-
-      // What the other side(s) received — that's what this player was traded FOR
       const otherRosters=receivingRosters.filter(rid=>rid!==receivingRid);
       if(!otherRosters.length)return;
+
       const otherAssets={players:[],picks:[]};
       otherRosters.forEach(rid=>{
         (rosterReceived[rid].players||[]).forEach(p=>otherAssets.players.push(p));
         (rosterReceived[rid].picks||[]).forEach(p=>otherAssets.picks.push(p));
       });
 
-      // Compute implied value: what the other side received = this player's implied worth
-      // Sum up current values of other side's assets
-      const otherValue=
-        otherAssets.players.reduce((sum,pid2)=>{
-          const v2=valueTrace[pid2]?valueTrace[pid2].currentValue:scaleAll(values['PLR_'+pid2]||0);
-          return sum+v2;
-        },0)+
-        otherAssets.picks.reduce((sum,pk)=>{
-          const k=pickKey(pk);
-          return sum+scaleAll(values[k]||pickBaseline(k,teams)||0);
-        },0);
-
-      // My side size vs other side size for package premium
+      // Implied value = sum of other side using MAIN SOLVER values (stable, no cascading)
       const mySize=rosterReceived[receivingRid].players.length+rosterReceived[receivingRid].picks.length;
       const otherSize=otherAssets.players.length+otherAssets.picks.length;
       const prem2=packagePremium(mySize,otherSize);
       const myPrem=mySize<otherSize?prem2.a:1.0;
-      const impliedValue=Math.round(otherValue*myPrem);
+
+      const otherRawValue=
+        otherAssets.players.reduce((s,p2)=>s+stablePlayerValue(p2),0)+
+        otherAssets.picks.reduce((s,pk)=>s+stablePickValue(pk),0);
+
+      // Implied value of this player = what the other side paid, adjusted for package
+      const impliedValue=Math.min(9999,Math.round(otherRawValue*myPrem));
       const premNote=myPrem>1?' (+'+Math.round((myPrem-1)*100)+'% package premium)':'';
 
-      const before=valueTrace[pid].currentValue;
-      // Blend: weight toward implied value based on trade count
-      const tc=valueTrace[pid].events.filter(e=>e.type==='trade').length+1;
-      const alpha=Math.min(0.6, 0.2+(tc*0.1));
-      const after=Math.round(before*(1-alpha)+impliedValue*alpha);
-
+      // "Before" = what they were seeded at (market baseline)
+      // "After" = what this specific trade implied they were worth
+      const before=valueTrace[pid].seedValue;
       const otherLabel=formatSide(otherAssets,pm);
       valueTrace[pid].events.push({
         type:'trade',
         date,
         label:'Traded for: '+otherLabel+premNote,
         before,
-        after,
+        after:impliedValue,
         implied:impliedValue
       });
-      valueTrace[pid].currentValue=after;
     });
   });
 
@@ -822,7 +820,7 @@ function buildAllValues(trades){
       rawValue:values[key]||0,
       tier,
       source:'league',
-      trace:valueTrace[pid]||{seedLabel:'',seedValue:0,events:[],currentValue:0}
+      trace:valueTrace[pid]||{seedLabel:'',seedValue:0,events:[]}
     });
   });
 
@@ -1343,7 +1341,7 @@ function openDrawer(pid){
     '<div class="d-stat"><div class="dl">Confidence</div><div class="dv" style="font-size:12px;padding-top:4px"><span class="tier-badge '+tierCls+'">'+tierLabel+'</span></div></div>';
 
   // Value trace section — shows how each trade changed the player's value
-  const trace=pv.trace||{seedLabel:'',seedValue:0,events:[],currentValue:0};
+  const trace=pv.trace||{seedLabel:'',seedValue:0,events:[]};
   const traceEvents=trace.events||[];
   const traceHtml='<div style="margin-bottom:1.5rem">'+
     '<div class="trade-memory-label">Value history — how each trade changed this player value</div>'+
