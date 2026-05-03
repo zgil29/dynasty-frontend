@@ -951,14 +951,13 @@ async function analyzeSelected(){
         (mv||[]).forEach(r=>{
           if(r.ktc_value>0) G.adpValues[r.player_id]=r.ktc_value;
         });
-        // Pre-normalize to 0-9000 immediately — no dependency on buildAllValues
-        const fcVals=Object.values(G.adpValues);
-        const fcMax=fcVals.length?Math.max(...fcVals):10000;
+        // Store FC values directly — already on 0-10000 scale
+        // Just cap at 9000 to stay within our pick-anchored system
         G.adpValuesNorm={};
         Object.entries(G.adpValues).forEach(([pid,v])=>{
-          G.adpValuesNorm[pid]=Math.round((v/fcMax)*9000);
+          G.adpValuesNorm[pid]=Math.min(9000,Math.round(v));
         });
-        console.log('ADP values loaded:',Object.keys(G.adpValues).length,'normalized');
+        console.log('ADP values loaded:',Object.keys(G.adpValues).length);
       }catch(e){ console.log('ADP values unavailable'); }
     }
 
