@@ -534,7 +534,7 @@ function buildAllValues(trades){
       values[key]=pickBaseline(key,teams);
     } else {
       const pid=key.replace('PLR_','');
-      const adp=adpSeed(pid);
+      const adp=adpSeed(pid,anchorVal);
       const baseline=dynastyBaseline(pid);
       // Only use search_rank if player has FC or baseline data — prevents scale mismatch
       // Players with none of these stay at lowSeed (mid-3rd) as a conservative default
@@ -674,14 +674,14 @@ function buildAllValues(trades){
   // Scale so best current pick = 9000. All picks and players relative to this.
   const scaleAll = v => Math.round((v / anchorVal) * 9000);
 
-  // FantasyCalc values normalized to our pick-anchored scale
-  // Self-contained — computes fcMax inline to avoid hoisting issues
-  function adpSeed(pid){
+  // FantasyCalc values normalized to pick scale
+  // anchorVal passed explicitly to avoid temporal dead zone issues
+  function adpSeed(pid, anchor){
     const adp = G.adpValues && G.adpValues[pid];
     if(!adp || adp <= 0) return 0;
     const vals = Object.values(G.adpValues||{});
     const fcMax = vals.length ? Math.max(...vals) : 10000;
-    return Math.round((adp / fcMax) * anchorVal);
+    return Math.round((adp / fcMax) * anchor);
   }
 
   // No external market ranking — values are purely league-derived
@@ -697,7 +697,7 @@ function buildAllValues(trades){
     const pid=key.replace('PLR_','');
     const baseline=dynastyBaseline(pid);
     const neutralSeedVal=pickBaseline('PICK_'+yr+'_2_mid',teams);
-    const adpVal=adpSeed(pid);
+    const adpVal=adpSeed(pid,anchorVal);
     const srVal=searchRankSeed(pm[pid]);
     const seedVal=adpVal>0?adpVal:baseline>0?baseline:srVal>0?srVal:lowSeed;
     const seedLabel=adpVal>0
@@ -795,7 +795,7 @@ function buildAllValues(trades){
     const tradeCount=trades.filter(t=>Object.keys(t.adds||{}).includes(pid)).length;
     if(tradeCount===0) return; // skip untraded players
     // Skip players with no recognized value seed — prevents scale-mismatched entries
-    const hasFC=adpSeed(pid)>0;
+    const hasFC=adpSeed(pid,anchorVal)>0;
     const hasBaseline=dynastyBaseline(pid)>0;
     if(!hasFC&&!hasBaseline&&tradeCount<2) return; // need FC/baseline OR 2+ trades for credibility
     const leagueVal=Math.min(10000,scaleAll(values[key]||0));
