@@ -290,10 +290,9 @@ const ROUND_RANGE = {
 function pickKey(pick){
   const yr=parseInt(pick.season)||curYear();
   const rd=parseInt(pick.round)||1;
-  // Specific slots only for current year (draft order known post-playoffs)
-  // All future years are generic — order unknown
-  const isCurrentYr=yr===curYear();
-  const slot=(isCurrentYr&&pick.pick_no)?String(pick.pick_no).padStart(2,'0'):'mid';
+  // Use specific slot whenever pick_no is available (past OR current year)
+  // Future picks without pick_no remain generic (order unknown)
+  const slot=pick.pick_no?String(pick.pick_no).padStart(2,'0'):'mid';
   return 'PICK_'+yr+'_'+rd+'_'+slot;
 }
 
@@ -314,10 +313,12 @@ function pickBaseline(key, teams){
   // Linear gradient: pos 1 → top value, pos t → bot value
   const slotVal=range.top - (pos-1)*((range.top-range.bot)/(Math.max(t-1,1)));
 
-  // No automatic year discount — let the league's actual trade data
-  // determine if a 2027 1st is worth more or less than a 2026 1st.
-  // Stronger draft classes will naturally show higher pick values.
-  return Math.round(slotVal);
+  // Past year picks (yr < curYear): apply a small discount since they've already
+  // been drafted and their value is historical context only, not current asset.
+  // Future/current year: no discount — let league trades determine relative value.
+  const pastDiscount = yr < curYear() ? 0.7 : 1.0;
+
+  return Math.round(slotVal * pastDiscount);
 }
 
 // ── Dynasty baseline values (Sleeper player IDs) ─────────────────────
@@ -841,7 +842,9 @@ function buildAllValues(trades){
   [...pickKeys].forEach(key=>{
     const parts=key.replace('PICK_','').split('_');
     const pYr=parseInt(parts[0]),rd=parseInt(parts[1]),slot=parts[2];
-    if(pYr<yr)return; // filter past years
+    // Include past year picks only if they have a specific slot (from draft data)
+    // Generic past year picks (mid) are still excluded — no useful info
+    if(pYr<yr && slot==='mid') return;
     // Collapse all mid-slot keys of same year+round into one entry
     const collapseKey='PICK_'+pYr+'_'+rd+'_mid';
     if(slot==='mid'){
@@ -865,7 +868,7 @@ function buildAllValues(trades){
         const tradeCount=trades.filter(t=>(t.draft_picks||[]).some(pk=>pickKey(pk)===key)).length;
         pickMap[key]={
           key,
-          label:pYr+' '+rd+'.'+slot.padStart(2,'0'),
+          label:(pYr<yr?'★ ':'')+pYr+' '+rd+'.'+slot.padStart(2,'0'),
           round:rd,year:pYr,slot,
           tradeCount,
           value:scaleAll(values[key]||0)
