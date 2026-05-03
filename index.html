@@ -517,8 +517,8 @@ function buildAllValues(trades){
   // 3. Low default (late 4th round level) as last resort
   // This gives realistic starting points so the solver makes smaller adjustments
   // Seed priority:
-  // 1. Startup ADP from backend (most accurate — real draft position data)
-  // 2. Hand-curated dynasty baseline (consensus for top players)
+  // 1. FantasyCalc dynasty values (most accurate — from ~1M real dynasty trades)
+  // 2. Hand-curated dynasty baseline (consensus for top ~80 players)
   // 3. Sleeper search_rank conversion (popularity proxy)
   // 4. Low default (late 4th round level)
   function adpSeed(pid){
@@ -695,9 +695,9 @@ function buildAllValues(trades){
     const srVal=searchRankSeed(pm[pid]);
     const seedVal=adpVal>0?adpVal:baseline>0?baseline:srVal>0?srVal:lowSeed;
     const seedLabel=adpVal>0
-      ?'Startup ADP seed (avg draft position across recent leagues)'
+      ?'FantasyCalc dynasty value (market baseline — fantasycalc.com)'
       :baseline>0
-        ?'Dynasty consensus baseline'
+        ?'Dynasty consensus baseline (hand-curated)'
         :srVal>0
           ?'Sleeper popularity seed (search rank #'+(pm[pid]&&pm[pid].search_rank||'?')+')'
           :'Low default seed (not widely tracked)';
@@ -927,7 +927,7 @@ async function analyzeSelected(){
       G.playerMeta=await fetchJ('https://api.sleeper.app/v1/players/nfl');
     }
 
-    // Load startup ADP values from backend (used as seed for untraded players)
+    // Load FantasyCalc dynasty values from backend (used as seed for untraded players)
     if(!Object.keys(G.adpValues).length){
       try{
         const mv=await fetchJ(BACKEND+'/api/market-values');
