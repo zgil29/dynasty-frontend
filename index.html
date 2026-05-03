@@ -500,11 +500,15 @@ function buildAllValues(trades){
       return keys;
     });
     if(keyedSides[0].length>0&&keyedSides[1].length>0){
-      // Store package premium multipliers alongside the pair
       const prem=packagePremium(keyedSides[0].length, keyedSides[1].length);
       tradePairs.push([keyedSides[0],keyedSides[1],prem]);
     }
   });
+
+  // Debug: log any PICK keys that have specific slots
+  const slotPicks=[...tradedKeys].filter(k=>k.startsWith('PICK_')&&!k.endsWith('_mid'));
+  if(slotPicks.length>0) console.log('Slot-specific pick keys in trades:', slotPicks.slice(0,10));
+  else console.log('No slot-specific pick keys found in trades');
 
   // Only include players that have actually been traded in this league
   // Untraded players are excluded — no local data = no value shown
