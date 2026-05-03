@@ -689,7 +689,11 @@ function buildAllValues(trades){
   const formatSide=(s,pm2)=>{
     const parts=[
       ...s.players.map(pid2=>{ const p2=pm2[pid2]; return p2?p2.full_name:pid2; }),
-      ...s.picks.map(pk=>pk.pick_no?pk.season+' '+pk.round+'.'+String(pk.pick_no).padStart(2,'0'):pk.season+' Rd '+pk.round)
+      ...s.picks.map(pk=>{
+        if(!pk.pick_no) return pk.season+' Rd '+pk.round;
+        const pickInRound=pk.pick_no-((pk.round-1)*(G.totalRosters||12));
+        return pk.season+' '+pk.round+'.'+String(Math.max(1,pickInRound)).padStart(2,'0');
+      })
     ];
     return parts.join(', ')||'(nothing)';
   };
@@ -769,7 +773,8 @@ function buildAllValues(trades){
         (rosterReceived[rid].picks||[]).forEach(p=>otherAssets.picks.push(p));
       });
 
-      // Implied value = sum of other side using MAIN SOLVER values (stable, no cascading)
+      // Implied value = other side total MINUS co-traded assets on this player's side
+      // e.g. Connor+Thomas+pick for pick1+pick2: Connor's value = (pick1+pick2) - Thomas - pick
       const mySize=rosterReceived[receivingRid].players.length+rosterReceived[receivingRid].picks.length;
       const otherSize=otherAssets.players.length+otherAssets.picks.length;
       const prem2=packagePremium(mySize,otherSize);
@@ -779,8 +784,16 @@ function buildAllValues(trades){
         otherAssets.players.reduce((s,p2)=>s+stablePlayerValue(p2),0)+
         otherAssets.picks.reduce((s,pk)=>s+stablePickValue(pk),0);
 
-      // Implied value of this player = what the other side paid, adjusted for package
-      const impliedValue=Math.min(9999,Math.round(otherRawValue*myPrem));
+      // Subtract co-traded players and picks on the same side as this player
+      const mySidePlayers=(rosterReceived[receivingRid].players||[]).filter(p2=>p2!==pid);
+      const mySidePicks=(rosterReceived[receivingRid].picks||[]);
+      const coTradeValue=
+        mySidePlayers.reduce((s,p2)=>s+stablePlayerValue(p2),0)+
+        mySidePicks.reduce((s,pk)=>s+stablePickValue(pk),0);
+
+      // This player's implied value = what was paid minus what came with them
+      const rawImplied=(otherRawValue*myPrem)-coTradeValue;
+      const impliedValue=Math.min(9999,Math.max(50,Math.round(rawImplied)));
       const premNote=myPrem>1?' (+'+Math.round((myPrem-1)*100)+'% package premium)':'';
 
       // Before = running value after previous trade (or seed if first trade)
@@ -1280,7 +1293,7 @@ function renderTrades(trades){
     picks.forEach(pick=>{
       const rid=pick.owner_id;
       if(!sides[rid])sides[rid]={players:[],picks:[]};
-      sides[rid].picks.push(pick.pick_no?pick.season+' '+pick.round+'.'+String(pick.pick_no).padStart(2,'0'):pick.season+' Rd '+pick.round);
+      sides[rid].picks.push(pick.pick_no?(()=>{const pir=pick.pick_no-((pick.round-1)*(G.totalRosters||12));return pick.season+' '+pick.round+'.'+String(Math.max(1,pir)).padStart(2,'0');})():pick.season+' Rd '+pick.round);
     });
     const entries=Object.entries(sides);
     if(entries.length<2)return'';
@@ -1417,7 +1430,7 @@ function openDrawer(pid){
       picks.forEach(pick=>{
         const rid=pick.owner_id;
         if(!sides[rid])sides[rid]={players:[],picks:[]};
-        sides[rid].picks.push(pick.pick_no?pick.season+' '+pick.round+'.'+String(pick.pick_no).padStart(2,'0'):pick.season+' Rd '+pick.round);
+        sides[rid].picks.push(pick.pick_no?(()=>{const pir=pick.pick_no-((pick.round-1)*(G.totalRosters||12));return pick.season+' '+pick.round+'.'+String(Math.max(1,pir)).padStart(2,'0');})():pick.season+' Rd '+pick.round);
       });
       const entries=Object.entries(sides);
       if(entries.length<2)return'';
