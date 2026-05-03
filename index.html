@@ -788,7 +788,7 @@ function buildAllValues(trades){
     const hasFC=(G.adpValuesNorm&&G.adpValuesNorm[pid]||0)>0;
     const hasBaseline=dynastyBaseline(pid)>0;
     if(!hasFC&&!hasBaseline&&tradeCount<2) return; // need FC/baseline OR 2+ trades for credibility
-    const leagueVal=Math.min(10000,scaleAll(values[key]||0));
+    const leagueVal=scaleAll(values[key]||0);
     const tier=tradeCount>=3?'proven':'anchored';
 
     playerResults.push({
@@ -807,6 +807,22 @@ function buildAllValues(trades){
   });
 
   playerResults.sort((a,b)=>b.value-a.value);
+
+  // Normalize final values so top player = 9500, last = proportional
+  // This prevents ties at the cap and spreads the distribution naturally
+  if(playerResults.length > 0){
+    const rawMax = playerResults[0].value || 1;
+    const rawMin = playerResults[playerResults.length-1].value || 0;
+    const targetMax = 9500;
+    const targetMin = Math.max(100, Math.round(targetMax * (rawMin/rawMax)));
+    playerResults.forEach(p=>{
+      if(rawMax === rawMin){
+        p.value = targetMax;
+      } else {
+        p.value = Math.round(targetMin + ((p.value - rawMin)/(rawMax - rawMin)) * (targetMax - targetMin));
+      }
+    });
+  }
 
   // Compute DNA: difference between league rank and market rank (percentile)
   const total=playerResults.length||1;
@@ -864,7 +880,7 @@ function buildAllValues(trades){
         pickMap[k]={
           key:k,label:futYr+' Round '+rd,
           round:rd,year:futYr,slot:'mid',tradeCount:0,
-          value:Math.min(10000,scaleAll(pickBaseline(k,teams)))
+          value:scaleAll(pickBaseline(k,teams))
         };
       }
     }
