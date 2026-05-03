@@ -1031,9 +1031,21 @@ async function analyzeSelected(){
       type:'trade',status:'complete'
     }));
     console.log(`Enriched ${enrichedCount} picks with slot numbers`);
-    // Log a sample pick to check format
-    const sampleTrade = allTrades.find(t=>t.draft_picks&&t.draft_picks.length>0);
-    if(sampleTrade) console.log('Sample pick after enrichment:', JSON.stringify(sampleTrade.draft_picks[0]));
+    // Log raw pick data to check roster_id format vs slot map keys
+    const rawTrade = chainRes.trades&&chainRes.trades.find(t=>t.draft_picks&&t.draft_picks.length>0);
+    if(rawTrade){
+      const rawPick = rawTrade.draft_picks[0];
+      console.log('Raw pick from DB:', JSON.stringify(rawPick));
+      const key1 = rawPick.season+'_'+rawPick.round+'_'+rawPick.roster_id;
+      const key2 = rawPick.season+'_'+rawPick.round+'_'+parseInt(rawPick.roster_id);
+      console.log('Key1:', key1, 'in map:', !!G.pickSlotMap[key1]);
+      console.log('Key2:', key2, 'in map:', !!G.pickSlotMap[key2]);
+      // Show all 2025 picks in trades
+      const picks2025 = chainRes.trades.flatMap(t=>
+        (t.draft_picks||[]).filter(p=>p.season==='2025'||p.season===2025)
+      );
+      console.log('2025 picks in trades:', picks2025.length, JSON.stringify(picks2025.slice(0,2)));
+    }
     G.trades=allTrades;
 
     hide('leagueLoading');show('analyzeBtn');
