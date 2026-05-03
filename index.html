@@ -682,63 +682,56 @@ function buildAllValues(trades){
 
   // Build value trace per player — shows how each trade influenced their value
   // Run a mini single-pass trace to show before/after per trade
-  const valueTrace={}; // pid → [{date, tradeId, before, after, otherSide}]
+  // Build value trace — chronological mini-solver to show value evolution per trade
+  // We run a simplified version: start each player at seed, process trades in date
+  // order, record before/after value at each trade involving that player
+  const valueTrace={};
+  const formatSide=(s,pm2)=>{
+    const parts=[
+      ...s.players.map(pid2=>{ const p=pm2[pid2]; return p?p.full_name:pid2; }),
+      ...s.picks.map(pk=>pk.pick_no?pk.season+' '+pk.round+'.'+String(pk.pick_no).padStart(2,'0'):pk.season+' Rd '+pk.round)
+    ];
+    return parts.join(', ')||'(nothing)';
+  };
+
+  // Initialise trace for each traded player with seed info
   allPlayerKeys.forEach(key=>{
     if(!key.startsWith('PLR_'))return;
     const pid=key.replace('PLR_','');
+    const adpVal=(G.adpValuesNorm&&G.adpValuesNorm[pid])||0;
     const baseline=dynastyBaseline(pid);
-    const neutralSeedVal=pickBaseline('PICK_'+yr+'_2_mid',teams);
-    const adpVal=(G.adpValuesNorm&&G.adpValuesNorm[pid]||0);
     const srVal=searchRankSeed(pm[pid]);
     const seedVal=adpVal>0?adpVal:baseline>0?baseline:srVal>0?srVal:lowSeed;
-    const seedLabel=adpVal>0
-      ?'FantasyCalc dynasty value (market baseline — fantasycalc.com)'
-      :baseline>0
-        ?'Dynasty consensus baseline (hand-curated)'
-        :srVal>0
-          ?'Sleeper popularity seed (search rank #'+(pm[pid]&&pm[pid].search_rank||'?')+')'
-          :'Low default seed (not widely tracked)';
-    valueTrace[pid]=[{
-      type:'seed',
-      label:seedLabel,
-      value: scaleAll(seedVal)
-    }];
+    const seedLabel=adpVal>0?'FantasyCalc market baseline':
+      baseline>0?'Dynasty consensus baseline':
+      srVal>0?'Sleeper popularity seed':'Low default seed';
+    valueTrace[pid]={
+      seedLabel,
+      seedValue:scaleAll(seedVal),
+      events:[], // chronological trade events with before/after values
+      currentValue:scaleAll(seedVal) // running value updated per trade
+    };
     if(!rosteredPlayerIds.has(pid)){
-      valueTrace[pid].push({type:'decay',label:'Not on any current roster (−35%)',value:null});
+      valueTrace[pid].events.push({
+        type:'decay',
+        label:'Not on any current roster (−35% applied)',
+        before:scaleAll(seedVal),
+        after:scaleAll(seedVal*0.65),
+        date:''
+      });
+      valueTrace[pid].currentValue=scaleAll(seedVal*0.65);
     }
   });
 
-  // Trace each trade's influence
+  // Process trades chronologically — for each trade involving a tracked player,
+  // compute the implied value from the other side and record before/after
   const sortedTrades=[...trades].sort((a,b)=>(a.created||0)-(b.created||0));
   sortedTrades.forEach(trade=>{
     const adds=trade.adds||{};
     const picks=trade.draft_picks||[];
-    const sides={};
-    Object.entries(adds).forEach(([pid,toRid])=>{
-      if(!sides[toRid])sides[toRid]={players:[],picks:[]};
-      sides[toRid].players.push(pid);
-    });
-    picks.forEach(pick=>{
-      if(!sides[pick.owner_id])sides[pick.owner_id]={players:[],picks:[]};
-      sides[pick.owner_id].picks.push(pick);
-    });
-    const sideEntries=Object.entries(sides);
-    if(sideEntries.length<2)return;
-    const [[,s1],[,s2]]=sideEntries;
-    const date=trade.created?new Date(trade.created).toLocaleDateString('en-US',{month:'short',year:'numeric'}):'';
-    const prem=packagePremium(
-      (s1.players.length+s1.picks.length),
-      (s2.players.length+s2.picks.length)
-    );
-    const formatSide=s=>{
-      const parts=[
-        ...s.players.map(pid=>{ const p=pm[pid]; return p?p.full_name:pid; }),
-        ...s.picks.map(pk=>pk.pick_no?pk.season+' '+pk.round+'.'+String(pk.pick_no).padStart(2,'0'):pk.season+' Rd '+pk.round)
-      ];
-      return parts.join(', ')||'(nothing)';
-    };
-    // Record trace for each player involved
-    // Build a lookup: roster_id → list of asset keys it received
+    const date=trade.created?new Date(trade.created).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+
+    // Build sides
     const rosterReceived={};
     Object.entries(adds).forEach(([pid,toRid])=>{
       if(!rosterReceived[toRid])rosterReceived[toRid]={players:[],picks:[]};
@@ -750,30 +743,56 @@ function buildAllValues(trades){
       rosterReceived[rid].picks.push(pick);
     });
     const receivingRosters=Object.keys(rosterReceived);
+    if(receivingRosters.length<2)return;
 
     Object.entries(adds).forEach(([pid, receivingRid])=>{
       if(!valueTrace[pid])return;
-      // What did the OTHER roster(s) receive? That's what this player was traded for.
+
+      // What the other side(s) received — that's what this player was traded FOR
       const otherRosters=receivingRosters.filter(rid=>rid!==receivingRid);
       if(!otherRosters.length)return;
-      // Combine all assets received by other rosters
       const otherAssets={players:[],picks:[]};
       otherRosters.forEach(rid=>{
         (rosterReceived[rid].players||[]).forEach(p=>otherAssets.players.push(p));
         (rosterReceived[rid].picks||[]).forEach(p=>otherAssets.picks.push(p));
       });
-      const otherSide=formatSide(otherAssets);
+
+      // Compute implied value: what the other side received = this player's implied worth
+      // Sum up current values of other side's assets
+      const otherValue=
+        otherAssets.players.reduce((sum,pid2)=>{
+          const v2=valueTrace[pid2]?valueTrace[pid2].currentValue:scaleAll(values['PLR_'+pid2]||0);
+          return sum+v2;
+        },0)+
+        otherAssets.picks.reduce((sum,pk)=>{
+          const k=pickKey(pk);
+          return sum+scaleAll(values[k]||pickBaseline(k,teams)||0);
+        },0);
+
+      // My side size vs other side size for package premium
       const mySize=rosterReceived[receivingRid].players.length+rosterReceived[receivingRid].picks.length;
       const otherSize=otherAssets.players.length+otherAssets.picks.length;
       const prem2=packagePremium(mySize,otherSize);
       const myPrem=mySize<otherSize?prem2.a:1.0;
+      const impliedValue=Math.round(otherValue*myPrem);
       const premNote=myPrem>1?' (+'+Math.round((myPrem-1)*100)+'% package premium)':'';
-      valueTrace[pid].push({
+
+      const before=valueTrace[pid].currentValue;
+      // Blend: weight toward implied value based on trade count
+      const tc=valueTrace[pid].events.filter(e=>e.type==='trade').length+1;
+      const alpha=Math.min(0.6, 0.2+(tc*0.1));
+      const after=Math.round(before*(1-alpha)+impliedValue*alpha);
+
+      const otherLabel=formatSide(otherAssets,pm);
+      valueTrace[pid].events.push({
         type:'trade',
         date,
-        label:'Traded for: '+otherSide+premNote,
-        value: scaleAll(values['PLR_'+pid]||0)
+        label:'Traded for: '+otherLabel+premNote,
+        before,
+        after,
+        implied:impliedValue
       });
+      valueTrace[pid].currentValue=after;
     });
   });
 
@@ -803,7 +822,7 @@ function buildAllValues(trades){
       rawValue:values[key]||0,
       tier,
       source:'league',
-      trace:valueTrace[pid]||[]
+      trace:valueTrace[pid]||{seedLabel:'',seedValue:0,events:[],currentValue:0}
     });
   });
 
@@ -1323,27 +1342,49 @@ function openDrawer(pid){
     '<div class="d-stat"><div class="dl">Position</div><div class="dv">'+p.position+'</div></div>'+
     '<div class="d-stat"><div class="dl">Confidence</div><div class="dv" style="font-size:12px;padding-top:4px"><span class="tier-badge '+tierCls+'">'+tierLabel+'</span></div></div>';
 
-  // Value trace section — shows how trades influenced the value
-  const trace=pv.trace||[];
-  const traceHtml=trace.length?
-    '<div style="margin-bottom:1.5rem">'+
-    '<div class="trade-memory-label">How this value was built</div>'+
+  // Value trace section — shows how each trade changed the player's value
+  const trace=pv.trace||{seedLabel:'',seedValue:0,events:[],currentValue:0};
+  const traceEvents=trace.events||[];
+  const traceHtml='<div style="margin-bottom:1.5rem">'+
+    '<div class="trade-memory-label">Value history — how each trade changed this player's worth</div>'+
     '<div style="position:relative;padding-left:20px">'+
     '<div style="position:absolute;left:6px;top:4px;bottom:4px;width:1px;background:var(--border2)"></div>'+
-    trace.map((step,i)=>{
-      const isLast=i===trace.length-1;
-      const dotColor=step.type==='seed'?'var(--muted2)':step.type==='decay'?'var(--red)':'var(--accent)';
-      const valStr=step.value!=null?'<span style="font-weight:700;color:var(--text);margin-left:8px">'+step.value.toLocaleString()+'</span>':'';
-      return '<div style="position:relative;margin-bottom:10px;font-size:12px;color:var(--muted2)">'+
-        '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:'+dotColor+'"></div>'+
-        '<span>'+step.label+'</span>'+
-        (step.date?'<span style="color:var(--muted);margin-left:6px">'+step.date+'</span>':'')+
-        valStr+
-        (isLast?'<span class="tier-badge tier-proven" style="margin-left:8px">Final</span>':'')+
+    // Seed entry
+    '<div style="position:relative;margin-bottom:12px;font-size:12px;color:var(--muted2)">'+
+      '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--muted2)"></div>'+
+      '<span>'+trace.seedLabel+'</span>'+
+      '<span style="font-weight:700;color:var(--text);margin-left:8px">'+
+        (trace.seedValue||0).toLocaleString()+
+      '</span>'+
+    '</div>'+
+    // Trade events
+    traceEvents.map((ev,i)=>{
+      const isLast=i===traceEvents.length-1;
+      if(ev.type==='decay'){
+        return '<div style="position:relative;margin-bottom:12px;font-size:12px;color:var(--red)">'+
+          '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--red)"></div>'+
+          '<span>'+ev.label+'</span>'+
+          '<span style="font-weight:700;color:var(--red);margin-left:8px">'+ev.after.toLocaleString()+'</span>'+
+          '</div>';
+      }
+      const delta=ev.after-ev.before;
+      const deltaColor=delta>0?'var(--green)':delta<0?'var(--red)':'var(--muted2)';
+      const deltaStr=delta>0?'+'+delta.toLocaleString():delta.toLocaleString();
+      return '<div style="position:relative;margin-bottom:12px;font-size:12px">'+
+        '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:'+(isLast?'var(--accent)':'var(--accent)')+'">'+'</div>'+
+        '<div style="color:var(--muted2)">'+ev.label+'</div>'+
+        (ev.date?'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+ev.date+'</div>':'')+
+        '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'+
+          '<span style="color:var(--muted2);font-size:11px">'+ev.before.toLocaleString()+'</span>'+
+          '<span style="color:var(--muted);font-size:11px">→</span>'+
+          '<span style="font-weight:700;color:var(--text)">'+ev.after.toLocaleString()+'</span>'+
+          '<span style="font-size:11px;color:'+deltaColor+';font-weight:600">('+deltaStr+')</span>'+
+          (isLast?'<span class="tier-badge tier-proven">Current</span>':'')+
+        '</div>'+
         '</div>';
     }).join('')+
-    '</div></div>'
-    :'';
+    (traceEvents.length===0?'<div style="font-size:12px;color:var(--muted)">No trades yet — value is market baseline</div>':'')+
+    '</div></div>';
 
   // Trade memory: every trade this player appeared in
   const playerTrades=G.trades.filter(t=>Object.keys(t.adds||{}).includes(pid));
