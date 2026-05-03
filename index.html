@@ -675,11 +675,12 @@ function buildAllValues(trades){
   const scaleAll = v => Math.round((v / anchorVal) * 9000);
 
   // FantasyCalc values normalized to our pick-anchored scale
-  // Must be defined after anchorVal so the scaling reference works
-  const fcMax = G.adpValues ? Math.max(...Object.values(G.adpValues), 1) : 10000;
+  // Self-contained — computes fcMax inline to avoid hoisting issues
   function adpSeed(pid){
     const adp = G.adpValues && G.adpValues[pid];
     if(!adp || adp <= 0) return 0;
+    const vals = Object.values(G.adpValues||{});
+    const fcMax = vals.length ? Math.max(...vals) : 10000;
     return Math.round((adp / fcMax) * anchorVal);
   }
 
