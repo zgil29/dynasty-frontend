@@ -313,12 +313,9 @@ function pickBaseline(key, teams){
   // Linear gradient: pos 1 → top value, pos t → bot value
   const slotVal=range.top - (pos-1)*((range.top-range.bot)/(Math.max(t-1,1)));
 
-  // Past year picks (yr < curYear): apply a small discount since they've already
-  // been drafted and their value is historical context only, not current asset.
-  // Future/current year: no discount — let league trades determine relative value.
-  const pastDiscount = yr < curYear() ? 0.7 : 1.0;
-
-  return Math.round(slotVal * pastDiscount);
+  // No year discount — past picks with known slots reflect real trade data
+  // Future picks without slots are handled by the 'mid' key system
+  return Math.round(slotVal);
 }
 
 // ── Dynasty baseline values (Sleeper player IDs) ─────────────────────
@@ -1011,22 +1008,32 @@ async function analyzeSelected(){
     // Store pick slot map for enriching trade picks
     G.pickSlotMap = chainRes.pickSlotMap || {};
     console.log('Pick slot map entries:', Object.keys(G.pickSlotMap).length);
+    // Log a few sample keys to understand format
+    const sampleKeys = Object.keys(G.pickSlotMap).slice(0,3);
+    console.log('Pick slot map sample keys:', sampleKeys);
 
     // Trades come from backend — enrich picks with actual slot numbers
     setText('leagueLoadingText','Building values...');
+    let enrichedCount = 0;
     const allTrades=(chainRes.trades||[]).map(t=>({
       transaction_id:t.trade_id,
       adds:t.adds||{},
       drops:t.drops||{},
       draft_picks:(t.draft_picks||[]).map(pick=>{
-        // Enrich pick with actual slot number if available
-        const key=`${pick.season}_${pick.round}_${pick.roster_id}`;
-        const slotNo=G.pickSlotMap[key];
-        return slotNo ? {...pick, pick_no: slotNo} : pick;
+        // Try both string and number roster_id formats
+        const key1=`${pick.season}_${pick.round}_${pick.roster_id}`;
+        const key2=`${pick.season}_${pick.round}_${parseInt(pick.roster_id)}`;
+        const slotNo=G.pickSlotMap[key1]||G.pickSlotMap[key2];
+        if(slotNo){ enrichedCount++; return {...pick, pick_no: slotNo}; }
+        return pick;
       }),
       created:t.created_at?new Date(t.created_at).getTime():null,
       type:'trade',status:'complete'
     }));
+    console.log(`Enriched ${enrichedCount} picks with slot numbers`);
+    // Log a sample pick to check format
+    const sampleTrade = allTrades.find(t=>t.draft_picks&&t.draft_picks.length>0);
+    if(sampleTrade) console.log('Sample pick after enrichment:', JSON.stringify(sampleTrade.draft_picks[0]));
     G.trades=allTrades;
 
     hide('leagueLoading');show('analyzeBtn');
