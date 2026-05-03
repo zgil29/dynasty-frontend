@@ -494,7 +494,9 @@ function buildAllValues(trades){
       });
       s.picks.forEach(pick=>{
         const pickYr=parseInt(pick.season)||yr;
-        if(pickYr<yr)return;
+        // Skip past year picks UNLESS they have a specific slot (enriched from draft data)
+        // Past year picks with known slots are valid trade data points
+        if(pickYr<yr && !pick.pick_no) return;
         const k=pickKey(pick);keys.push(k);tradedKeys.add(k);
       });
       return keys;
