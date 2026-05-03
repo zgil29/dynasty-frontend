@@ -258,7 +258,7 @@ let G = {
   user: null, allLeagues: [], selectedId: null,
   playerMeta: {}, trades: [], rosters: [], users: [],
   leagueName: '', totalRosters: 12, season: '',
-  allValues: null, rosterMap: {}, adpValues: {}
+  allValues: null, rosterMap: {}, adpValues: {}, adpValuesNorm: {}
 };
 
 // ── Pick value system ────────────────────────────────────────────────
@@ -534,7 +534,7 @@ function buildAllValues(trades){
       values[key]=pickBaseline(key,teams);
     } else {
       const pid=key.replace('PLR_','');
-      const adp=adpSeed(pid,anchorVal);
+      const adp=(G.adpValuesNorm&&G.adpValuesNorm[pid]||0);
       const baseline=dynastyBaseline(pid);
       // Only use search_rank if player has FC or baseline data — prevents scale mismatch
       // Players with none of these stay at lowSeed (mid-3rd) as a conservative default
@@ -674,16 +674,6 @@ function buildAllValues(trades){
   // Scale so best current pick = 9000. All picks and players relative to this.
   const scaleAll = v => Math.round((v / anchorVal) * 9000);
 
-  // FantasyCalc values normalized to pick scale
-  // anchorVal passed explicitly to avoid temporal dead zone issues
-  function adpSeed(pid, anchor){
-    const adp = G.adpValues && G.adpValues[pid];
-    if(!adp || adp <= 0) return 0;
-    const vals = Object.values(G.adpValues||{});
-    const fcMax = vals.length ? Math.max(...vals) : 10000;
-    return Math.round((adp / fcMax) * anchor);
-  }
-
   // No external market ranking — values are purely league-derived
   const marketRankMap={};
 
@@ -697,7 +687,7 @@ function buildAllValues(trades){
     const pid=key.replace('PLR_','');
     const baseline=dynastyBaseline(pid);
     const neutralSeedVal=pickBaseline('PICK_'+yr+'_2_mid',teams);
-    const adpVal=adpSeed(pid,anchorVal);
+    const adpVal=(G.adpValuesNorm&&G.adpValuesNorm[pid]||0);
     const srVal=searchRankSeed(pm[pid]);
     const seedVal=adpVal>0?adpVal:baseline>0?baseline:srVal>0?srVal:lowSeed;
     const seedLabel=adpVal>0
@@ -795,7 +785,7 @@ function buildAllValues(trades){
     const tradeCount=trades.filter(t=>Object.keys(t.adds||{}).includes(pid)).length;
     if(tradeCount===0) return; // skip untraded players
     // Skip players with no recognized value seed — prevents scale-mismatched entries
-    const hasFC=adpSeed(pid,anchorVal)>0;
+    const hasFC=(G.adpValuesNorm&&G.adpValuesNorm[pid]||0)>0;
     const hasBaseline=dynastyBaseline(pid)>0;
     if(!hasFC&&!hasBaseline&&tradeCount<2) return; // need FC/baseline OR 2+ trades for credibility
     const leagueVal=Math.min(10000,scaleAll(values[key]||0));
@@ -961,7 +951,14 @@ async function analyzeSelected(){
         (mv||[]).forEach(r=>{
           if(r.ktc_value>0) G.adpValues[r.player_id]=r.ktc_value;
         });
-        console.log('ADP values loaded:',Object.keys(G.adpValues).length);
+        // Pre-normalize to 0-9000 immediately — no dependency on buildAllValues
+        const fcVals=Object.values(G.adpValues);
+        const fcMax=fcVals.length?Math.max(...fcVals):10000;
+        G.adpValuesNorm={};
+        Object.entries(G.adpValues).forEach(([pid,v])=>{
+          G.adpValuesNorm[pid]=Math.round((v/fcMax)*9000);
+        });
+        console.log('ADP values loaded:',Object.keys(G.adpValues).length,'normalized');
       }catch(e){ console.log('ADP values unavailable'); }
     }
 
