@@ -210,8 +210,9 @@ tbody tr:hover td{background:var(--surface2);cursor:pointer}
           <thead><tr>
             <th>Player</th>
             <th class="r">League value</th>
-            <th class="r" style="min-width:80px">vs market</th>
-            <th style="width:110px">Demand</th>
+            <th class="r" style="min-width:70px">KTC</th>
+            <th class="r" style="min-width:70px">vs KTC</th>
+            <th style="width:100px">Demand</th>
           </tr></thead>
           <tbody id="valuesBody"></tbody>
         </table>
@@ -259,7 +260,7 @@ let G = {
   user: null, allLeagues: [], selectedId: null,
   playerMeta: {}, trades: [], rosters: [], users: [],
   leagueName: '', totalRosters: 12, season: '',
-  allValues: null, rosterMap: {}
+  allValues: null, rosterMap: {}, ktcValues: null
 };
 
 // ── Pick value system ────────────────────────────────────────────────
@@ -452,6 +453,25 @@ function buildAllValues(trades){
   const tradePairs=[];
   const tradedKeys=new Set();
 
+  // Package premium multipliers for lopsided trades
+  // The fewer-asset side gets a value bump — reflects that adding assets
+  // is a concession. Mirrors KTC's approach.
+  function packagePremium(sizeA, sizeB){
+    const [small, big] = sizeA <= sizeB ? [sizeA,sizeB] : [sizeB,sizeA];
+    if(small===big) return {a:1.0, b:1.0};
+    const diff=big-small;
+    const bump=diff===1?1.08:diff===2?1.15:1.20; // 1v2=8%, 1v3=15%, 1v4+=20%
+    return sizeA<sizeB?{a:bump,b:1.0}:{a:1.0,b:bump};
+  }
+
+  // Track which players are currently rostered for unrostered decay
+  const rosteredPlayerIds=new Set();
+  G.rosters.forEach(r=>{
+    (r.players||[]).forEach(pid=>rosteredPlayerIds.add(pid));
+    (r.taxi||[]).forEach(pid=>rosteredPlayerIds.add(pid));
+    (r.reserve||[]).forEach(pid=>rosteredPlayerIds.add(pid));
+  });
+
   trades.forEach(trade=>{
     const adds=trade.adds||{};
     const picks=trade.draft_picks||[];
@@ -483,7 +503,9 @@ function buildAllValues(trades){
       return keys;
     });
     if(keyedSides[0].length>0&&keyedSides[1].length>0){
-      tradePairs.push([keyedSides[0],keyedSides[1]]);
+      // Store package premium multipliers alongside the pair
+      const prem=packagePremium(keyedSides[0].length, keyedSides[1].length);
+      tradePairs.push([keyedSides[0],keyedSides[1],prem]);
     }
   });
 
@@ -565,25 +587,40 @@ function buildAllValues(trades){
      });
 
      // Pass 2: mixed trades — only players float, picks frozen
-     mixedPairs.forEach(([sA,sB])=>{
+     // Package premium applied: smaller side's implied value gets boosted
+     mixedPairs.forEach(([sA,sB,prem])=>{
        const kA=sA.filter(k=>k in values);
        const kB=sB.filter(k=>k in values);
        if(!kA.length||!kB.length)return;
        const tA=kA.reduce((s,k)=>s+(nv[k]||0),0);
        const tB=kB.reduce((s,k)=>s+(nv[k]||0),0);
-       const floatPly=(k,impl)=>{
+       const premA=(prem&&prem.a)||1.0;
+       const premB=(prem&&prem.b)||1.0;
+       const floatPly=(k,impl,multiplier)=>{
          if(k.startsWith('PICK_'))return;
          const pid=k.replace('PLR_','');
          const tc=trades.filter(t=>Object.keys(t.adds||{}).includes(pid)).length;
          const a=Math.min(0.45,0.1+(tc*0.07));
-         nv[k]=(nv[k]*(1-a))+(impl*a);
+         const adjustedImpl=impl*multiplier;
+         nv[k]=(nv[k]*(1-a))+(adjustedImpl*a);
        };
-       kA.forEach(k=>floatPly(k,tB/kA.length));
-       kB.forEach(k=>floatPly(k,tA/kB.length));
+       kA.forEach(k=>floatPly(k,tB/kA.length,premA));
+       kB.forEach(k=>floatPly(k,tA/kB.length,premB));
      });
 
      Object.assign(values,nv);
    }
+
+   // Unrostered player decay: players not on any current roster get a value penalty
+   // A player who was traded 3 years ago but nobody wants now is likely washed
+   // Penalty: 35% reduction to their solver-derived value
+   allPlayerKeys.forEach(k=>{
+     if(k.startsWith('PICK_'))return;
+     const pid=k.replace('PLR_','');
+     if(!rosteredPlayerIds.has(pid)){
+       values[k]=values[k]*0.65;
+     }
+   });
 
    // Reset ALL generic mid picks to clean baseline — they never entered the solver
    // so any drift came from initialization; this guarantees they're correct.
@@ -629,6 +666,69 @@ function buildAllValues(trades){
 
   // All displayed players are trade-derived — scaleAll applies to everyone.
 
+  // Build value trace per player — shows how each trade influenced their value
+  // Run a mini single-pass trace to show before/after per trade
+  const valueTrace={}; // pid → [{date, tradeId, before, after, otherSide}]
+  allPlayerKeys.forEach(key=>{
+    if(!key.startsWith('PLR_'))return;
+    const pid=key.replace('PLR_','');
+    const baseline=dynastyBaseline(pid);
+    const neutralSeedVal=pickBaseline('PICK_'+yr+'_2_mid',teams);
+    valueTrace[pid]=[{
+      type:'seed',
+      label: baseline>0?'Dynasty consensus baseline':'Neutral seed (no consensus data)',
+      value: scaleAll(baseline>0?baseline:neutralSeedVal)
+    }];
+    if(!rosteredPlayerIds.has(pid)){
+      valueTrace[pid].push({type:'decay',label:'Not on any current roster (−35%)',value:null});
+    }
+  });
+
+  // Trace each trade's influence
+  const sortedTrades=[...trades].sort((a,b)=>(a.created||0)-(b.created||0));
+  sortedTrades.forEach(trade=>{
+    const adds=trade.adds||{};
+    const picks=trade.draft_picks||[];
+    const sides={};
+    Object.entries(adds).forEach(([pid,toRid])=>{
+      if(!sides[toRid])sides[toRid]={players:[],picks:[]};
+      sides[toRid].players.push(pid);
+    });
+    picks.forEach(pick=>{
+      if(!sides[pick.owner_id])sides[pick.owner_id]={players:[],picks:[]};
+      sides[pick.owner_id].picks.push(pick);
+    });
+    const sideEntries=Object.entries(sides);
+    if(sideEntries.length<2)return;
+    const [[,s1],[,s2]]=sideEntries;
+    const date=trade.created?new Date(trade.created).toLocaleDateString('en-US',{month:'short',year:'numeric'}):'';
+    const prem=packagePremium(
+      (s1.players.length+s1.picks.length),
+      (s2.players.length+s2.picks.length)
+    );
+    const formatSide=s=>{
+      const parts=[
+        ...s.players.map(pid=>{ const p=pm[pid]; return p?p.full_name:pid; }),
+        ...s.picks.map(pk=>pk.pick_no?pk.season+' '+pk.round+'.'+String(pk.pick_no).padStart(2,'0'):pk.season+' Rd '+pk.round)
+      ];
+      return parts.join(', ')||'(nothing)';
+    };
+    // Record trace for each player involved
+    Object.entries(adds).forEach(([pid,])=>{
+      if(!valueTrace[pid])return;
+      const otherSideEntry=sideEntries.find(([rid,])=>!Object.values(adds).slice(0,1).includes(rid));
+      const otherSide=otherSideEntry?formatSide(otherSideEntry[1]):formatSide(s1.players.includes(pid)?s2:s1);
+      const myPrem=s1.players.includes(pid)?prem.a:prem.b;
+      const premNote=myPrem>1?` (+${Math.round((myPrem-1)*100)}% package premium)`:'';
+      valueTrace[pid].push({
+        type:'trade',
+        date,
+        label:`Traded for: ${otherSide}${premNote}`,
+        value: scaleAll(values['PLR_'+pid]||0)
+      });
+    });
+  });
+
   // Build player results — only traded players included
   const playerResults=[];
   allPlayerKeys.forEach(key=>{
@@ -638,10 +738,12 @@ function buildAllValues(trades){
     const tradeCount=trades.filter(t=>Object.keys(t.adds||{}).includes(pid)).length;
     if(tradeCount===0) return; // skip untraded players
     const leagueVal=Math.min(10000,scaleAll(values[key]||0));
+    const tier=tradeCount>=3?'proven':'anchored';
 
-    let tier='proven';
-    if(tradeCount===1) tier='anchored';
-    else if(tradeCount===2) tier='anchored';
+    // KTC comparison value
+    const ktcRaw=(G.ktcValues&&G.ktcValues[pid])||0;
+    const ktcVal=ktcRaw>0?Math.min(10000,ktcRaw):0;
+    const dna=ktcVal>0?Math.round(((leagueVal-ktcVal)/Math.max(ktcVal,1))*100):0;
 
     playerResults.push({
       pid,key,
@@ -651,12 +753,12 @@ function buildAllValues(trades){
       age:p.age||'?',
       count:tradeCount,
       value:leagueVal,
-      marketValue:0,
+      ktcValue:ktcVal,
       rawValue:values[key]||0,
       tier,
       source:'league',
-      marketRank:marketRankMap[key]||9999,
-      dna:0
+      dna, // % difference vs KTC: positive = your league values higher
+      trace:valueTrace[pid]||[]
     });
   });
 
@@ -791,10 +893,20 @@ async function analyzeSelected(){
   if(!G.selectedId)return;
   hide('leagueError');show('leagueLoading');hide('analyzeBtn');
   try{
-    // Load player metadata from Sleeper (needed for names/positions of traded players)
+    // Load player metadata from Sleeper
     setText('leagueLoadingText','Loading player database...');
     if(!Object.keys(G.playerMeta).length){
       G.playerMeta=await fetchJ('https://api.sleeper.app/v1/players/nfl');
+    }
+
+    // Load KTC market values from backend (non-blocking — best effort)
+    if(!G.ktcValues){
+      try{
+        const mv=await fetchJ(BACKEND+'/api/market-values');
+        G.ktcValues={};
+        (mv||[]).forEach(r=>{ G.ktcValues[r.player_id]=r.ktc_value; });
+        console.log('KTC values loaded:',Object.keys(G.ktcValues).length);
+      }catch(e){ G.ktcValues={}; console.log('KTC values unavailable'); }
     }
 
     // Load league + full trade chain from backend
@@ -991,12 +1103,17 @@ function renderValues(playerResults){
       ?'<span class="tier-badge tier-proven">● '+p.count+' trades</span>'
       :'<span class="tier-badge tier-anchored">● '+p.count+' trade'+(p.count!==1?'s':'')+'</span>';
     const dnaHtml='';
+    const ktcHtml=p.ktcValue>0?p.ktcValue.toLocaleString():'<span style="color:var(--muted)">—</span>';
+    const dnaHtml2=p.ktcValue>0&&Math.abs(p.dna)>=5
+      ?'<span class="dna-chip '+(p.dna>0?'dna-up':'dna-down')+'">'+(p.dna>0?'↑':'↓')+Math.abs(p.dna)+'%</span>'
+      :'<span style="color:var(--muted)">—</span>';
     return '<tr class="player-row" data-pid="'+p.pid+'">'+
       '<td><span class="pos pos-'+p.position+'">'+p.position+'</span>'+p.name+
       '<span style="font-size:11px;color:var(--muted);margin-left:4px">'+p.team+(p.age!=='?'?' · Age '+p.age:'')+' </span>'+
       sourceBadge+'</td>'+
       '<td class="r" style="font-weight:700">'+p.value.toLocaleString()+'</td>'+
-      '<td class="r">'+dnaHtml+'</td>'+
+      '<td class="r" style="color:var(--muted2)">'+ktcHtml+'</td>'+
+      '<td class="r">'+dnaHtml2+'</td>'+
       '<td><div class="bar-wrap"><div class="bar"><div class="bar-fill" style="width:'+Math.round((p.value/maxVal)*100)+'%"></div></div></div></td>'+
       '</tr>';
   }).join('');
@@ -1122,22 +1239,47 @@ function openDrawer(pid){
 
   const tierLabel=pv.tier==='proven'?'League-proven ('+pv.count+'+ trades)':'Early signal ('+pv.count+' trade'+(pv.count!==1?'s':'')+')';
   const tierCls=pv.tier==='proven'?'tier-proven':'tier-anchored';
+  const ktcCompare=pv.ktcValue>0
+    ?'<strong style="color:var(--text)">'+pv.ktcValue.toLocaleString()+'</strong>'+(Math.abs(pv.dna)>=5
+      ?' — your league values this '+(pv.dna>0?'<strong style="color:var(--green)">'+pv.dna+'% higher</strong>':'<strong style="color:var(--red)">'+Math.abs(pv.dna)+'% lower</strong>')+' than KTC'
+      :' — in line with KTC')
+    :'<span style="color:var(--muted)">Not available yet — data updates daily</span>';
 
   document.getElementById('drawerStats').innerHTML=
     '<div class="d-stat"><div class="dl">League value</div><div class="dv">'+pv.value.toLocaleString()+'</div></div>'+
     '<div class="d-stat"><div class="dl">Times traded</div><div class="dv">'+pv.count+'</div></div>'+
-    '<div class="d-stat"><div class="dl">Position</div><div class="dv">'+p.position+'</div></div>'+
-    '<div class="d-stat"><div class="dl">Confidence</div><div class="dv" style="font-size:12px;padding-top:4px"><span class="tier-badge '+tierCls+'">'+tierLabel+'</span></div></div>';
+    '<div class="d-stat"><div class="dl">Confidence</div><div class="dv" style="font-size:12px;padding-top:4px"><span class="tier-badge '+tierCls+'">'+tierLabel+'</span></div></div>'+
+    '<div class="d-stat" style="grid-column:1/-1"><div class="dl">KTC comparison <span style="font-size:10px;color:var(--muted)">(data: <a href="https://keeptradecut.com" target="_blank" style="color:var(--accent)">KeepTradeCut</a>)</span></div><div class="dv" style="font-size:13px;padding-top:4px;line-height:1.5">'+ktcCompare+'</div></div>';
+
+  // Value trace section — shows how trades influenced the value
+  const trace=pv.trace||[];
+  const traceHtml=trace.length?
+    '<div style="margin-bottom:1.5rem">'+
+    '<div class="trade-memory-label">How this value was built</div>'+
+    '<div style="position:relative;padding-left:20px">'+
+    '<div style="position:absolute;left:6px;top:4px;bottom:4px;width:1px;background:var(--border2)"></div>'+
+    trace.map((step,i)=>{
+      const isLast=i===trace.length-1;
+      const dotColor=step.type==='seed'?'var(--muted2)':step.type==='decay'?'var(--red)':'var(--accent)';
+      const valStr=step.value!=null?'<span style="font-weight:700;color:var(--text);margin-left:8px">'+step.value.toLocaleString()+'</span>':'';
+      return '<div style="position:relative;margin-bottom:10px;font-size:12px;color:var(--muted2)">'+
+        '<div style="position:absolute;left:-17px;top:4px;width:8px;height:8px;border-radius:50%;background:'+dotColor+'"></div>'+
+        '<span>'+step.label+'</span>'+
+        (step.date?'<span style="color:var(--muted);margin-left:6px">'+step.date+'</span>':'')+
+        valStr+
+        (isLast?'<span class="tier-badge tier-proven" style="margin-left:8px">Final</span>':'')+
+        '</div>';
+    }).join('')+
+    '</div></div>'
+    :'';
 
   // Trade memory: every trade this player appeared in
   const playerTrades=G.trades.filter(t=>Object.keys(t.adds||{}).includes(pid));
   const rm=G.rosterMap;
 
-  if(!playerTrades.length){
-    document.getElementById('drawerMemory').innerHTML='<div style="font-size:13px;color:var(--muted);padding:1rem 0">This player has never been traded in your league.</div>';
-  } else {
-    const sorted=[...playerTrades].sort((a,b)=>(b.created||0)-(a.created||0));
-    document.getElementById('drawerMemory').innerHTML=sorted.map(trade=>{
+  const memoryHtml=playerTrades.length?
+    '<div class="trade-memory-label">Full trade history in your league</div>'+
+    [...playerTrades].sort((a,b)=>(b.created||0)-(a.created||0)).map(trade=>{
       const adds=trade.adds||{},picks=trade.draft_picks||[],sides={};
       Object.entries(adds).forEach(([apid,rid])=>{
         if(!sides[rid])sides[rid]={players:[],picks:[]};
@@ -1167,8 +1309,10 @@ function openDrawer(pid){
         '<div class="memory-arrow">⇄</div>'+
         '<div><div class="memory-side-label">'+(rm[r2]||'Team '+r2)+' gets</div><div class="memory-assets">'+fmtSide(s2)+'</div></div>'+
         '</div></div>';
-    }).join('');
-  }
+    }).join('')
+    :'<div style="font-size:13px;color:var(--muted);padding:1rem 0">This player has never been traded in your league.</div>';
+
+  document.getElementById('drawerMemory').innerHTML=traceHtml+memoryHtml;
 
   document.getElementById('drawerOverlay').classList.add('open');
   document.body.style.overflow='hidden';
